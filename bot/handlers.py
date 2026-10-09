@@ -68,6 +68,7 @@ def create_router(settings: Settings) -> Router:
             urls[0],
             audio_only=True,
             max_filesize=settings.max_file_size_bytes,
+            proxy=settings.proxy_for(urls[0]),
         )
 
     @router.message(F.text)
@@ -84,6 +85,7 @@ def create_router(settings: Settings) -> Router:
             urls[0],
             audio_only=False,
             max_filesize=settings.max_file_size_bytes,
+            proxy=settings.proxy_for(urls[0]),
         )
 
     return router
@@ -95,6 +97,7 @@ async def _process_url(
     *,
     audio_only: bool,
     max_filesize: int,
+    proxy: str | None = None,
 ) -> None:
     user_id = message.from_user.id if message.from_user else None
     logger.info(
@@ -114,6 +117,7 @@ async def _process_url(
             url,
             audio_only=audio_only,
             max_filesize=max_filesize,
+            proxy=proxy,
         )
 
         await status.edit_text("Uploading...")

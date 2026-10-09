@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from urllib.parse import urlparse
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -13,6 +15,16 @@ class Settings:
     bot_token: str
     allowed_user_ids: frozenset[int]
     max_file_size_mb: float = 49.0
+    proxy_url: str = ""
+    proxy_hosts: tuple[str, ...] = ()
+
+    def proxy_for(self, url: str) -> str | None:
+        if not self.proxy_url:
+            return None
+        host = (urlparse(url).hostname or "").lower()
+        if any(host == h or host.endswith("." + h) for h in self.proxy_hosts):
+            return self.proxy_url
+        return None
 
     @property
     def max_file_size_bytes(self) -> int:
@@ -45,6 +57,16 @@ def load_settings() -> Settings:
     except ValueError as exc:
         raise RuntimeError("MAX_FILE_SIZE_MB must be a number.") from exc
 
+    proxy_hosts = tuple(
+        h.strip().lower()
+        for h in os.getenv("PROXY_HOSTS", "reddit.com,redd.it").split(",")
+        if h.strip()
+    )
+
     return Settings(
-        bot_token=token, allowed_user_ids=allowed, max_file_size_mb=max_mb
+        bot_token=token,
+        allowed_user_ids=allowed,
+        max_file_size_mb=max_mb,
+        proxy_url=os.getenv("PROXY_URL", "").strip(),
+        proxy_hosts=proxy_hosts,
     )

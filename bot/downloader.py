@@ -72,11 +72,13 @@ def _build_options(
     outtmpl: str,
     audio_only: bool,
     max_filesize: int | None,
+    proxy: str | None = None,
 ) -> dict:
     options: dict = {
         "outtmpl": outtmpl,
         "noplaylist": True,
         "quiet": True,
+        "noprogress": True,
         "no_warnings": True,
         "restrictfilenames": True,
         "retries": 3,
@@ -85,6 +87,9 @@ def _build_options(
 
     if max_filesize is not None:
         options["max_filesize"] = max_filesize
+
+    if proxy:
+        options["proxy"] = proxy
 
     if audio_only:
         options.update(
@@ -157,12 +162,17 @@ def _extract_audio(video: Path, max_filesize: int | None) -> Path | None:
     return out
 
 
-def _download_images(url: str, temp_dir: str) -> tuple[Path, ...]:
+def _download_images(
+    url: str, temp_dir: str, proxy: str | None = None
+) -> tuple[Path, ...]:
     """Fetch photo posts (e.g. TikTok slideshows) with gallery-dl."""
     image_dir = Path(temp_dir) / "images"
+    command = [sys.executable, "-m", "gallery_dl", "-q", "-D", str(image_dir)]
+    if proxy:
+        command += ["--proxy", proxy]
     try:
         subprocess.run(
-            [sys.executable, "-m", "gallery_dl", "-q", "-D", str(image_dir), url],
+            [*command, url],
             check=True,
             capture_output=True,
             timeout=120,
@@ -186,12 +196,14 @@ def _download_with_ytdlp(
     *,
     audio_only: bool,
     max_filesize: int | None,
+    proxy: str | None = None,
 ) -> tuple[Path, dict]:
     outtmpl = str(Path(temp_dir) / "%(id)s.%(ext)s")
     options = _build_options(
         outtmpl=outtmpl,
         audio_only=audio_only,
         max_filesize=max_filesize,
+        proxy=proxy,
     )
 
     try:
@@ -238,16 +250,21 @@ def download_media(
     *,
     audio_only: bool = False,
     max_filesize: int | None = None,
+    proxy: str | None = None,
 ) -> DownloadResult:
     temp_dir = tempfile.mkdtemp(prefix="hoard-")
 
     try:
         try:
             path, info = _download_with_ytdlp(
-                url, temp_dir, audio_only=audio_only, max_filesize=max_filesize
+                url,
+                temp_dir,
+                audio_only=audio_only,
+                max_filesize=max_filesize,
+                proxy=proxy,
             )
         except DownloadError:
-            images = () if audio_only else _download_images(url, temp_dir)
+            images = () if audio_only else _download_images(url, temp_dir, proxy)
             if not images:
                 raise
             return DownloadResult(
@@ -263,7 +280,7 @@ def download_media(
 
         # Photo slideshows come back from yt-dlp as audio only.
         if not audio_only and path.suffix.lower() in AUDIO_EXTENSIONS:
-            images = _download_images(url, temp_dir)
+            images = _download_images(url, temp_dir, proxy)
             if images:
                 return DownloadResult(
                     path=images[0],

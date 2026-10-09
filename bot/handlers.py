@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import FSInputFile, Message
+from aiogram.types import FSInputFile, InputMediaPhoto, Message
 
 from bot.downloader import (
     DownloadError,
@@ -123,7 +123,21 @@ async def _process_url(
         if len(caption) > 900:
             caption = caption[:897] + "..."
 
-        if audio_only or result.media_type == "audio":
+        if result.media_type == "images":
+            for i in range(0, len(result.images), 10):
+                group = [
+                    InputMediaPhoto(
+                        media=FSInputFile(img),
+                        caption=caption if i == 0 and n == 0 else None,
+                    )
+                    for n, img in enumerate(result.images[i : i + 10])
+                ]
+                await message.answer_media_group(group)
+            if result.audio_path is not None:
+                await message.answer_audio(
+                    audio=FSInputFile(result.audio_path), title=result.title
+                )
+        elif audio_only or result.media_type == "audio":
             await message.answer_audio(audio=file, caption=caption)
         else:
             await message.answer_video(
@@ -141,7 +155,8 @@ async def _process_url(
             "Sent user=%s url=%s size_mb=%.1f audio=%s",
             user_id,
             url,
-            result.path.stat().st_size / (1024 * 1024),
+            sum(p.stat().st_size for p in (result.images or (result.path,)))
+            / (1024 * 1024),
             result.audio_path is not None,
         )
         await status.delete()

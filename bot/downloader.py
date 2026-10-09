@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,13 +32,19 @@ KNOWN_HOST_HINTS = (
 )
 
 
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+AUDIO_EXTENSIONS = {".mp3", ".m4a", ".aac", ".opus", ".ogg", ".wav"}
+MAX_IMAGES = 30
+
+
 @dataclass(frozen=True, slots=True)
 class DownloadResult:
     path: Path
     title: str | None
     webpage_url: str | None
-    media_type: Literal["video", "audio"]
+    media_type: Literal["video", "audio", "images"]
     audio_path: Path | None = None
+    images: tuple[Path, ...] = ()
 
 
 class DownloadError(Exception):
@@ -149,13 +157,36 @@ def _extract_audio(video: Path, max_filesize: int | None) -> Path | None:
     return out
 
 
-def download_media(
+def _download_images(url: str, temp_dir: str) -> tuple[Path, ...]:
+    """Fetch photo posts (e.g. TikTok slideshows) with gallery-dl."""
+    image_dir = Path(temp_dir) / "images"
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "gallery_dl", "-q", "-D", str(image_dir), url],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return ()
+
+    if not image_dir.is_dir():
+        return ()
+    images = sorted(
+        p
+        for p in image_dir.iterdir()
+        if p.suffix.lower() in IMAGE_EXTENSIONS and p.stat().st_size > 0
+    )
+    return tuple(images[:MAX_IMAGES])
+
+
+def _download_with_ytdlp(
     url: str,
+    temp_dir: str,
     *,
-    audio_only: bool = False,
-    max_filesize: int | None = None,
-) -> DownloadResult:
-    temp_dir = tempfile.mkdtemp(prefix="hoard-")
+    audio_only: bool,
+    max_filesize: int | None,
+) -> tuple[Path, dict]:
     outtmpl = str(Path(temp_dir) / "%(id)s.%(ext)s")
     options = _build_options(
         outtmpl=outtmpl,
@@ -199,29 +230,68 @@ def download_media(
         path.unlink(missing_ok=True)
         raise DownloadError("That file is larger than the configured size limit.")
 
-    return DownloadResult(
-        path=path,
-        title=info.get("title"),
-        webpage_url=info.get("webpage_url") or url,
-        media_type="audio" if audio_only else "video",
-        audio_path=None if audio_only else _extract_audio(path, max_filesize),
-    )
+    return path, info
+
+
+def download_media(
+    url: str,
+    *,
+    audio_only: bool = False,
+    max_filesize: int | None = None,
+) -> DownloadResult:
+    temp_dir = tempfile.mkdtemp(prefix="hoard-")
+
+    try:
+        try:
+            path, info = _download_with_ytdlp(
+                url, temp_dir, audio_only=audio_only, max_filesize=max_filesize
+            )
+        except DownloadError:
+            images = () if audio_only else _download_images(url, temp_dir)
+            if not images:
+                raise
+            return DownloadResult(
+                path=images[0],
+                title=None,
+                webpage_url=url,
+                media_type="images",
+                images=images,
+            )
+
+        title = info.get("title")
+        webpage_url = info.get("webpage_url") or url
+
+        # Photo slideshows come back from yt-dlp as audio only.
+        if not audio_only and path.suffix.lower() in AUDIO_EXTENSIONS:
+            images = _download_images(url, temp_dir)
+            if images:
+                return DownloadResult(
+                    path=images[0],
+                    title=title,
+                    webpage_url=webpage_url,
+                    media_type="images",
+                    audio_path=path,
+                    images=images,
+                )
+
+        return DownloadResult(
+            path=path,
+            title=title,
+            webpage_url=webpage_url,
+            media_type="audio" if audio_only else "video",
+            audio_path=None if audio_only else _extract_audio(path, max_filesize),
+        )
+    except BaseException:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
 
 
 def cleanup_download(result: DownloadResult | None) -> None:
     if result is None:
         return
 
-    path = result.path
-    try:
-        if path.exists():
-            path.unlink()
-        if result.audio_path is not None:
-            result.audio_path.unlink(missing_ok=True)
-        parent = path.parent
-        if parent.exists() and parent.name.startswith("hoard-"):
-            for leftover in parent.iterdir():
-                leftover.unlink(missing_ok=True)
-            parent.rmdir()
-    except OSError:
-        pass
+    parent = result.path.parent
+    if parent.name == "images":
+        parent = parent.parent
+    if parent.name.startswith("hoard-"):
+        shutil.rmtree(parent, ignore_errors=True)

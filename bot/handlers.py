@@ -32,7 +32,15 @@ HELP_TEXT = (
 
 
 def create_router(settings: Settings) -> Router:
-    router = Router(name="video-dl")
+    router = Router(name="hoard")
+
+    @router.message.outer_middleware()
+    async def allow_listed_only(handler, event: Message, data):
+        user_id = event.from_user.id if event.from_user else None
+        if user_id not in settings.allowed_user_ids:
+            logger.warning("Ignored message from unauthorized user id=%s", user_id)
+            return None
+        return await handler(event, data)
 
     @router.message(CommandStart())
     async def start(message: Message) -> None:
@@ -88,6 +96,13 @@ async def _process_url(
     audio_only: bool,
     max_filesize: int,
 ) -> None:
+    user_id = message.from_user.id if message.from_user else None
+    logger.info(
+        "Request user=%s mode=%s url=%s",
+        user_id,
+        "audio" if audio_only else "video",
+        url,
+    )
     status = await message.answer(
         "Extracting audio..." if audio_only else "Downloading..."
     )
@@ -116,13 +131,25 @@ async def _process_url(
                 caption=caption,
                 supports_streaming=True,
             )
+            if result.audio_path is not None:
+                await message.answer_audio(
+                    audio=FSInputFile(result.audio_path),
+                    title=result.title,
+                )
 
+        logger.info(
+            "Sent user=%s url=%s size_mb=%.1f audio=%s",
+            user_id,
+            url,
+            result.path.stat().st_size / (1024 * 1024),
+            result.audio_path is not None,
+        )
         await status.delete()
     except DownloadError as exc:
         await status.edit_text(str(exc))
-        logger.info("Download failed for %s: %s", url, exc)
+        logger.info("Failed user=%s url=%s reason=%s", user_id, url, exc)
     except Exception:
-        logger.exception("Unhandled error while processing %s", url)
+        logger.exception("Error user=%s url=%s", user_id, url)
         await status.edit_text(
             "Something went wrong while processing that link. Try again later."
         )

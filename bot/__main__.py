@@ -24,7 +24,7 @@ async def run() -> None:
     dp = Dispatcher()
     dp.include_router(create_router(settings))
 
-    logging.getLogger(__name__).info("Starting video-dl-bot polling...")
+    logging.getLogger(__name__).info("Starting hoard polling...")
     await dp.start_polling(bot)
 
 

@@ -11,6 +11,7 @@ load_dotenv()
 @dataclass(frozen=True, slots=True)
 class Settings:
     bot_token: str
+    allowed_user_ids: frozenset[int]
     max_file_size_mb: float = 49.0
 
     @property
@@ -25,10 +26,25 @@ def load_settings() -> Settings:
             "BOT_TOKEN is missing. Copy .env.example to .env and set your token."
         )
 
+    ids_raw = os.getenv("ALLOWED_USER_IDS", "").strip()
+    try:
+        allowed = frozenset(int(i) for i in ids_raw.split(",") if i.strip())
+    except ValueError as exc:
+        raise RuntimeError(
+            "ALLOWED_USER_IDS must be comma-separated numeric Telegram user IDs."
+        ) from exc
+    if not allowed:
+        raise RuntimeError(
+            "ALLOWED_USER_IDS is missing. Set your numeric Telegram user ID "
+            "(message @userinfobot to find it)."
+        )
+
     max_mb_raw = os.getenv("MAX_FILE_SIZE_MB", "49").strip()
     try:
         max_mb = float(max_mb_raw)
     except ValueError as exc:
         raise RuntimeError("MAX_FILE_SIZE_MB must be a number.") from exc
 
-    return Settings(bot_token=token, max_file_size_mb=max_mb)
+    return Settings(
+        bot_token=token, allowed_user_ids=allowed, max_file_size_mb=max_mb
+    )

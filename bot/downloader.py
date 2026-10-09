@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,7 @@ class DownloadResult:
     title: str | None
     webpage_url: str | None
     media_type: Literal["video", "audio"]
+    audio_path: Path | None = None
 
 
 class DownloadError(Exception):
@@ -123,13 +125,37 @@ def _resolve_downloaded_path(info: dict, ydl: yt_dlp.YoutubeDL) -> Path:
     raise DownloadError("Download finished but the media file was not found.")
 
 
+def _extract_audio(video: Path, max_filesize: int | None) -> Path | None:
+    out = video.with_suffix(".mp3")
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-loglevel", "error", "-i", str(video),
+                "-vn", "-c:a", "libmp3lame", "-b:a", "192k", str(out),
+            ],
+            check=True,
+            timeout=300,
+        )
+    except (subprocess.SubprocessError, OSError):
+        out.unlink(missing_ok=True)
+        return None
+
+    if not out.exists() or out.stat().st_size == 0:
+        out.unlink(missing_ok=True)
+        return None
+    if max_filesize is not None and out.stat().st_size > max_filesize:
+        out.unlink(missing_ok=True)
+        return None
+    return out
+
+
 def download_media(
     url: str,
     *,
     audio_only: bool = False,
     max_filesize: int | None = None,
 ) -> DownloadResult:
-    temp_dir = tempfile.mkdtemp(prefix="video-dl-bot-")
+    temp_dir = tempfile.mkdtemp(prefix="hoard-")
     outtmpl = str(Path(temp_dir) / "%(id)s.%(ext)s")
     options = _build_options(
         outtmpl=outtmpl,
@@ -178,6 +204,7 @@ def download_media(
         title=info.get("title"),
         webpage_url=info.get("webpage_url") or url,
         media_type="audio" if audio_only else "video",
+        audio_path=None if audio_only else _extract_audio(path, max_filesize),
     )
 
 
@@ -189,8 +216,10 @@ def cleanup_download(result: DownloadResult | None) -> None:
     try:
         if path.exists():
             path.unlink()
+        if result.audio_path is not None:
+            result.audio_path.unlink(missing_ok=True)
         parent = path.parent
-        if parent.exists() and parent.name.startswith("video-dl-bot-"):
+        if parent.exists() and parent.name.startswith("hoard-"):
             for leftover in parent.iterdir():
                 leftover.unlink(missing_ok=True)
             parent.rmdir()

@@ -1,4 +1,4 @@
-# video-dl-bot
+# hoard
 
 Telegram bot that downloads public videos from links (YouTube, TikTok, Instagram, X/Twitter, Facebook, Reddit, and other [yt-dlp](https://github.com/yt-dlp/yt-dlp)-supported sites).
 
@@ -11,12 +11,12 @@ Telegram bot that downloads public videos from links (YouTube, TikTok, Instagram
 ## Setup
 
 ```bash
-cd /Users/ish/codes/pycharm/video-dl-bot
+cd hoard
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# edit .env and set BOT_TOKEN
+# edit .env and set BOT_TOKEN and ALLOWED_USER_IDS
 ```
 
 ## Run
@@ -30,5 +30,6 @@ Send any supported video URL in chat. Commands: `/start`, `/help`, `/audio <url>
 
 ## Notes
 
+- Private bot: only user IDs listed in `ALLOWED_USER_IDS` get a response; everyone else is ignored (and logged).
 - Public media only — does not bypass logins, private accounts, or DRM.
 - Default Telegram Bot API upload limit is ~50MB. Raise it with a local Bot API server if needed.

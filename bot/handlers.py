@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 HELP_TEXT = (
     "Send a public video link and I'll download it.\n\n"
-    "Works with YouTube, TikTok, Instagram, X/Twitter, Facebook, Reddit, "
+    "Works with YouTube, TikTok, Instagram, X/Twitter, Facebook, Reddit, Pinterest, "
     "and other sites supported by yt-dlp.\n\n"
     "Commands:\n"
     "/start — intro\n"

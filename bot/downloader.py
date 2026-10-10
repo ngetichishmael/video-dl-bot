@@ -29,6 +29,8 @@ KNOWN_HOST_HINTS = (
     "vimeo.com",
     "twitch.tv",
     "streamable.com",
+    "pinterest.com",
+    "pin.it",
 )
 
 

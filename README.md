@@ -1,6 +1,6 @@
 # hoard
 
-Telegram bot that downloads public videos from links (YouTube, TikTok, Instagram, X/Twitter, Facebook, Reddit, and other [yt-dlp](https://github.com/yt-dlp/yt-dlp)-supported sites).
+Telegram bot that downloads public videos from links (YouTube, TikTok, Instagram, X/Twitter, Facebook, Reddit, Pinterest, and other [yt-dlp](https://github.com/yt-dlp/yt-dlp)-supported sites).
 
 ## Requirements
 

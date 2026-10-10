@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import replace
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -67,13 +69,20 @@ def _note_from_text(text: str) -> str | None:
     return note[:500] or None
 
 
-def _format_entries(entries: list[Download]) -> str:
+def _local(created_at: str, tz: ZoneInfo) -> str:
+    """History times are stored in UTC; show them in the configured timezone."""
+    utc = datetime.strptime(created_at, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+    return utc.astimezone(tz).strftime("%Y-%m-%d %H:%M")
+
+
+def _format_entries(entries: list[Download], tz: ZoneInfo) -> str:
     lines: list[str] = []
     for d in entries:
         title = (d.title or "Untitled").replace("\n", " ")
         if len(title) > 60:
             title = title[:57] + "..."
-        lines.append(f"#{d.id} · {d.created_at[:10]} · {d.site or '?'} · {title}")
+        when = _local(d.created_at, tz)
+        lines.append(f"#{d.id} · {when} · {d.site or '?'} · {title}")
         if d.note:
             lines.append(f"    note: {d.note}")
         lines.append(f"    {d.url}")
@@ -83,6 +92,7 @@ def _format_entries(entries: list[Download]) -> str:
 def create_router(settings: Settings) -> Router:
     router = Router(name="hoard")
     store = Store(settings.history_db)
+    tz = ZoneInfo(settings.timezone)
 
     @router.message.outer_middleware()
     async def allow_listed_only(handler, event: Message, data):
@@ -120,6 +130,7 @@ def create_router(settings: Settings) -> Router:
             message,
             urls[0],
             store=store,
+            tz=tz,
             audio_only=True,
             max_filesize=settings.max_file_size_bytes,
             proxy=settings.proxy_for(_media_host_url(urls[0])),
@@ -132,7 +143,7 @@ def create_router(settings: Settings) -> Router:
         if not entries:
             await message.answer("No downloads yet.")
             return
-        await message.answer(_format_entries(entries), link_preview_options=NO_PREVIEW)
+        await message.answer(_format_entries(entries, tz), link_preview_options=NO_PREVIEW)
 
     @router.message(Command("search"))
     async def search_cmd(message: Message, command: CommandObject) -> None:
@@ -144,7 +155,7 @@ def create_router(settings: Settings) -> Router:
         if not entries:
             await message.answer(f"Nothing found for: {query}")
             return
-        await message.answer(_format_entries(entries), link_preview_options=NO_PREVIEW)
+        await message.answer(_format_entries(entries, tz), link_preview_options=NO_PREVIEW)
 
     @router.message(Command("note"))
     async def note_cmd(message: Message, command: CommandObject) -> None:
@@ -213,6 +224,7 @@ def create_router(settings: Settings) -> Router:
             message,
             urls[0],
             store=store,
+            tz=tz,
             audio_only=False,
             max_filesize=settings.max_file_size_bytes,
             proxy=settings.proxy_for(_media_host_url(urls[0])),
@@ -248,6 +260,7 @@ async def _process_url(
     url: str,
     *,
     store: Store,
+    tz: ZoneInfo,
     audio_only: bool,
     max_filesize: int,
     proxy: str | None = None,
@@ -270,7 +283,8 @@ async def _process_url(
             if note:
                 store.set_note(cached.id, user_id, note)
             await message.answer(
-                f"Already downloaded as #{cached.id} on {cached.created_at[:10]}; "
+                f"Already downloaded as #{cached.id} on "
+                f"{_local(cached.created_at, tz)[:10]}; "
                 "sent again from cache."
             )
             logger.info("Cached user=%s url=%s id=%s", user_id, url, cached.id)

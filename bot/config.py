@@ -20,6 +20,7 @@ class Settings:
     proxy_url: str = ""
     proxy_hosts: tuple[str, ...] = ()
     history_db: Path = DEFAULT_HISTORY_DB
+    timezone: str = "Africa/Nairobi"
 
     def proxy_for(self, url: str) -> str | None:
         if not self.proxy_url:
@@ -72,5 +73,6 @@ def load_settings() -> Settings:
         max_file_size_mb=max_mb,
         proxy_url=os.getenv("PROXY_URL", "").strip(),
         proxy_hosts=proxy_hosts,
+        timezone=os.getenv("TIMEZONE", "").strip() or "Africa/Nairobi",
         history_db=Path(os.getenv("HISTORY_DB", "").strip() or DEFAULT_HISTORY_DB),
     )

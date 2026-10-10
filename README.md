@@ -42,4 +42,4 @@ Every download is recorded in a local SQLite file (`data/hoard.db`, override wit
 
 - Private bot: only user IDs listed in `ALLOWED_USER_IDS` get a response; everyone else is ignored (and logged).
 - Public media only — does not bypass logins, private accounts, or DRM.
-- Default Telegram Bot API upload limit is ~50MB. Raise it with a local Bot API server if needed.
+- Telegram's cloud Bot API caps uploads at ~50MB. Sources up to `MAX_FILE_SIZE_MB` (default 100) are downloaded and re-encoded to fit; keeping originals above 50MB needs a local Bot API server.

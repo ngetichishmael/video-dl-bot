@@ -34,6 +34,11 @@ KNOWN_HOST_HINTS = (
 )
 
 
+# Telegram's cloud Bot API rejects uploads above ~50 MB; larger files are re-encoded.
+TELEGRAM_UPLOAD_LIMIT = 49 * 1024 * 1024
+SHRINK_TARGET = 45 * 1024 * 1024
+AUDIO_BITRATE_KBPS = 128
+
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".aac", ".opus", ".ogg", ".wav"}
 MAX_IMAGES = 30
@@ -138,6 +143,74 @@ def _resolve_downloaded_path(info: dict, ydl: yt_dlp.YoutubeDL) -> Path:
         return mp4
 
     raise DownloadError("Download finished but the media file was not found.")
+
+
+def _probe_duration(path: Path) -> float | None:
+    try:
+        out = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=nw=1:nk=1", str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        ).stdout.strip()
+        return float(out)
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return None
+
+
+def _shrink_to_fit(path: Path, *, audio: bool) -> Path:
+    """Re-encode media that is over Telegram's upload limit so it fits."""
+    if path.stat().st_size <= TELEGRAM_UPLOAD_LIMIT:
+        return path
+
+    duration = _probe_duration(path)
+    if not duration or duration <= 0:
+        raise DownloadError("That file is too large to send and could not be shrunk.")
+
+    total_kbps = SHRINK_TARGET * 8 / duration / 1000
+    out = path.with_name(path.stem + "-small" + (".mp3" if audio else ".mp4"))
+
+    for factor in (0.92, 0.75):
+        budget = total_kbps * factor
+        if audio:
+            if budget < 32:
+                break
+            args = ["-vn", "-c:a", "libmp3lame", "-b:a", f"{int(min(budget, 192))}k"]
+        else:
+            video_kbps = budget - AUDIO_BITRATE_KBPS
+            if video_kbps < 150:
+                break
+            args = [
+                "-c:v", "libx264", "-preset", "veryfast",
+                "-b:v", f"{int(video_kbps)}k",
+                "-maxrate", f"{int(video_kbps * 1.4)}k",
+                "-bufsize", f"{int(video_kbps * 2)}k",
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                "-c:a", "aac", "-b:a", f"{AUDIO_BITRATE_KBPS}k",
+            ]
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-i", str(path), *args, str(out)],
+                check=True,
+                timeout=900,
+            )
+        except (subprocess.SubprocessError, OSError):
+            out.unlink(missing_ok=True)
+            raise DownloadError(
+                "That file is too large to send and could not be shrunk."
+            ) from None
+        if out.exists() and 0 < out.stat().st_size <= TELEGRAM_UPLOAD_LIMIT:
+            path.unlink(missing_ok=True)
+            return out
+
+    out.unlink(missing_ok=True)
+    raise DownloadError(
+        "That file is too long to shrink under Telegram's 50 MB upload limit."
+    )
 
 
 def _extract_audio(video: Path, max_filesize: int | None) -> Path | None:
@@ -293,12 +366,15 @@ def download_media(
                     images=images,
                 )
 
+        path = _shrink_to_fit(path, audio=audio_only)
         return DownloadResult(
             path=path,
             title=title,
             webpage_url=webpage_url,
             media_type="audio" if audio_only else "video",
-            audio_path=None if audio_only else _extract_audio(path, max_filesize),
+            audio_path=None
+            if audio_only
+            else _extract_audio(path, TELEGRAM_UPLOAD_LIMIT),
         )
     except BaseException:
         shutil.rmtree(temp_dir, ignore_errors=True)

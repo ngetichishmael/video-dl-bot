@@ -16,7 +16,7 @@ DEFAULT_HISTORY_DB = Path(__file__).resolve().parent.parent / "data" / "hoard.db
 class Settings:
     bot_token: str
     allowed_user_ids: frozenset[int]
-    max_file_size_mb: float = 49.0
+    max_file_size_mb: float = 100.0
     proxy_url: str = ""
     proxy_hosts: tuple[str, ...] = ()
     history_db: Path = DEFAULT_HISTORY_DB
@@ -55,7 +55,7 @@ def load_settings() -> Settings:
             "(message @userinfobot to find it)."
         )
 
-    max_mb_raw = os.getenv("MAX_FILE_SIZE_MB", "49").strip()
+    max_mb_raw = os.getenv("MAX_FILE_SIZE_MB", "100").strip()
     try:
         max_mb = float(max_mb_raw)
     except ValueError as exc:

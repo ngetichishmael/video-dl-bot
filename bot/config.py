@@ -59,7 +59,7 @@ def load_settings() -> Settings:
 
     proxy_hosts = tuple(
         h.strip().lower()
-        for h in os.getenv("PROXY_HOSTS", "reddit.com,redd.it").split(",")
+        for h in os.getenv("PROXY_HOSTS", "reddit.com,redd.it,youtube.com,youtu.be").split(",")
         if h.strip()
     )
 

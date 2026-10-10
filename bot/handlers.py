@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from aiogram import F, Router
@@ -14,6 +15,7 @@ from bot.downloader import (
     download_media,
     extract_urls,
 )
+from bot.spotify import is_spotify_url, resolve_track
 
 if TYPE_CHECKING:
     from bot.config import Settings
@@ -68,7 +70,7 @@ def create_router(settings: Settings) -> Router:
             urls[0],
             audio_only=True,
             max_filesize=settings.max_file_size_bytes,
-            proxy=settings.proxy_for(urls[0]),
+            proxy=settings.proxy_for(_media_host_url(urls[0])),
         )
 
     @router.message(F.text)
@@ -85,10 +87,15 @@ def create_router(settings: Settings) -> Router:
             urls[0],
             audio_only=False,
             max_filesize=settings.max_file_size_bytes,
-            proxy=settings.proxy_for(urls[0]),
+            proxy=settings.proxy_for(_media_host_url(urls[0])),
         )
 
     return router
+
+
+def _media_host_url(url: str) -> str:
+    # Spotify tracks are fetched from YouTube, so they use YouTube's proxy rule.
+    return "https://www.youtube.com/" if is_spotify_url(url) else url
 
 
 async def _process_url(
@@ -106,19 +113,28 @@ async def _process_url(
         "audio" if audio_only else "video",
         url,
     )
+    spotify = is_spotify_url(url)
+    audio_only = audio_only or spotify
     status = await message.answer(
         "Extracting audio..." if audio_only else "Downloading..."
     )
     result = None
 
     try:
+        source, display_title = url, None
+        if spotify:
+            track = await asyncio.to_thread(resolve_track, url)
+            source, display_title = track.search_query, track.display
+
         result = await asyncio.to_thread(
             download_media,
-            url,
+            source,
             audio_only=audio_only,
             max_filesize=max_filesize,
             proxy=proxy,
         )
+        if display_title:
+            result = replace(result, title=display_title)
 
         await status.edit_text("Uploading...")
         file = FSInputFile(result.path)

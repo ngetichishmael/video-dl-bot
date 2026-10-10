@@ -11,8 +11,11 @@ from urllib.parse import urlparse
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
+    CallbackQuery,
     ForceReply,
     FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     InputMediaPhoto,
     LinkPreviewOptions,
     Message,
@@ -70,6 +73,24 @@ def _note_from_text(text: str) -> str | None:
     return note[:500] or None
 
 
+def _keyboard(download_id: int, url: str) -> InlineKeyboardMarkup:
+    top = [
+        InlineKeyboardButton(text="Add note", callback_data=f"note:{download_id}")
+    ]
+    if url.lower().startswith(("http://", "https://")):
+        top.append(InlineKeyboardButton(text="Source", url=url))
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            top,
+            [
+                InlineKeyboardButton(
+                    text="Remove from history", callback_data=f"del:{download_id}"
+                )
+            ],
+        ]
+    )
+
+
 def _label(download_id: int, title: str | None) -> str:
     text = f"#{download_id} · {title or 'Downloaded media'}"
     return text if len(text) <= 900 else text[:897] + "..."
@@ -110,11 +131,19 @@ def create_router(settings: Settings) -> Router:
     tz = ZoneInfo(settings.timezone)
     # Tapping a command in Telegram's menu sends it with no text, so we ask for
     # the missing part and use the user's next message as the argument.
-    pending: dict[int, str] = {}
+    pending: dict[int, tuple[str, int | None]] = {}
 
-    async def ask(message: Message, action: str) -> None:
-        pending[message.from_user.id] = action
-        prompt, placeholder = PROMPTS[action]
+    async def ask(
+        message: Message,
+        action: str,
+        *,
+        user_id: int | None = None,
+        target: int | None = None,
+        prompt: str | None = None,
+    ) -> None:
+        pending[user_id or message.from_user.id] = (action, target)
+        default_prompt, placeholder = PROMPTS[action]
+        prompt = prompt or default_prompt
         await message.answer(
             prompt,
             reply_markup=ForceReply(
@@ -129,6 +158,41 @@ def create_router(settings: Settings) -> Router:
             logger.warning("Ignored message from unauthorized user id=%s", user_id)
             return None
         return await handler(event, data)
+
+    @router.callback_query.outer_middleware()
+    async def allow_listed_callbacks(handler, event: CallbackQuery, data):
+        if event.from_user.id not in settings.allowed_user_ids:
+            logger.warning("Ignored callback from unauthorized user id=%s", event.from_user.id)
+            return None
+        return await handler(event, data)
+
+    @router.callback_query(F.data.startswith("note:"))
+    async def note_button(query: CallbackQuery) -> None:
+        download_id = int(query.data.split(":", 1)[1])
+        entry = store.get(download_id, query.from_user.id)
+        await query.answer()
+        if entry is None or query.message is None:
+            return
+        await ask(
+            query.message,
+            "note",
+            user_id=query.from_user.id,
+            target=download_id,
+            prompt=f"What should the note for #{download_id} say?",
+        )
+
+    @router.callback_query(F.data.startswith("del:"))
+    async def delete_button(query: CallbackQuery) -> None:
+        download_id = int(query.data.split(":", 1)[1])
+        removed = store.delete(download_id, query.from_user.id)
+        await query.answer(
+            f"Removed #{download_id} from history." if removed else "Already removed."
+        )
+        if query.message is not None:
+            try:
+                await query.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                logger.debug("Could not clear buttons for #%s", download_id)
 
     @router.message(CommandStart())
     async def start(message: Message) -> None:
@@ -200,8 +264,14 @@ def create_router(settings: Settings) -> Router:
             return
         await run_search(message, query)
 
-    async def run_note(message: Message, text: str) -> None:
-        latest = store.latest(message.from_user.id)
+    async def run_note(
+        message: Message, text: str, target: int | None = None
+    ) -> None:
+        latest = (
+            store.get(target, message.from_user.id)
+            if target is not None
+            else store.latest(message.from_user.id)
+        )
         if latest is None:
             await message.answer("No downloads yet.")
             return
@@ -268,8 +338,11 @@ def create_router(settings: Settings) -> Router:
     async def handle_text(message: Message) -> None:
         text = message.text or ""
 
-        action = pending.pop(message.from_user.id, None)
+        action, target = pending.pop(message.from_user.id, (None, None))
         if action is not None and (action == "audio" or not extract_urls(text)):
+            if action == "note":
+                await run_note(message, text.strip()[:500], target)
+                return
             handlers = {
                 "note": run_note,
                 "search": run_search,
@@ -315,11 +388,20 @@ async def _send_cached(message: Message, entry: Download) -> list[int]:
     caption = _label(entry.id, entry.title)
     sent: list[Message] = []
     if entry.media_type == "audio":
-        sent.append(await message.answer_audio(audio=entry.file_id, caption=caption))
+        sent.append(
+            await message.answer_audio(
+                audio=entry.file_id,
+                caption=caption,
+                reply_markup=_keyboard(entry.id, entry.url),
+            )
+        )
     else:
         sent.append(
             await message.answer_video(
-                video=entry.file_id, caption=caption, supports_streaming=True
+                video=entry.file_id,
+                caption=caption,
+                supports_streaming=True,
+                reply_markup=_keyboard(entry.id, entry.url),
             )
         )
         if entry.audio_file_id:
@@ -426,7 +508,11 @@ async def _process_url(
                     )
                     sent_ids.append(audio_msg.message_id)
             elif audio_only or result.media_type == "audio":
-                sent = await message.answer_audio(audio=file, caption=caption)
+                sent = await message.answer_audio(
+                    audio=file,
+                    caption=caption,
+                    reply_markup=_keyboard(download_id, url),
+                )
                 sent_ids.append(sent.message_id)
                 file_id = sent.audio.file_id if sent.audio else None
             else:
@@ -434,6 +520,7 @@ async def _process_url(
                     video=file,
                     caption=caption,
                     supports_streaming=True,
+                    reply_markup=_keyboard(download_id, url),
                 )
                 sent_ids.append(sent.message_id)
                 file_id = sent.video.file_id if sent.video else None

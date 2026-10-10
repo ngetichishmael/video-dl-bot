@@ -36,6 +36,7 @@ Every download is recorded in a local SQLite file (`data/hoard.db`, override wit
 - Reply to any video/audio Hoard sent with text to attach a note, or use `/note <text>` for the latest one
 - `/history` lists the last 10, `/search <text or #tag>` finds by title, note, link or site
 - `/get <id>` re-sends a past download instantly (via Telegram's stored file), `/delete <id>` removes an entry
+- Each video has buttons: **Add note** (asks, then saves to that download), **Source** (opens the original link), **Remove from history**
 - Sending a link you've already downloaded re-sends it from cache instead of downloading again
 
 ## Notes

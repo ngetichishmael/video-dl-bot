@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-
+from pathlib import Path
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
@@ -17,6 +17,7 @@ class Settings:
     max_file_size_mb: float = 49.0
     proxy_url: str = ""
     proxy_hosts: tuple[str, ...] = ()
+    history_db: Path = Path(__file__).resolve().parent.parent / "data" / "hoard.db"
 
     def proxy_for(self, url: str) -> str | None:
         if not self.proxy_url:
@@ -63,10 +64,12 @@ def load_settings() -> Settings:
         if h.strip()
     )
 
+    default_db = Settings.history_db
     return Settings(
         bot_token=token,
         allowed_user_ids=allowed,
         max_file_size_mb=max_mb,
         proxy_url=os.getenv("PROXY_URL", "").strip(),
         proxy_hosts=proxy_hosts,
+        history_db=Path(os.getenv("HISTORY_DB", "").strip() or default_db),
     )

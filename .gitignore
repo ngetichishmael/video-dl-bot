@@ -18,3 +18,5 @@ downloads/
 *.m4a
 .idea/
 .vscode/
+data/
+*.db

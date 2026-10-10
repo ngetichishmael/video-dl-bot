@@ -28,6 +28,16 @@ python -m bot
 
 Send any supported video URL in chat. Commands: `/start`, `/help`, `/audio <url>`.
 
+### History and notes
+
+Every download is recorded in a local SQLite file (`data/hoard.db`, override with `HISTORY_DB`).
+
+- Add a note when you download: `<url> #recipes spicy chicken`
+- Reply to any video/audio Hoard sent with text to attach a note, or use `/note <text>` for the latest one
+- `/history` lists the last 10, `/search <text or #tag>` finds by title, note, link or site
+- `/get <id>` re-sends a past download instantly (via Telegram's stored file), `/delete <id>` removes an entry
+- Sending a link you've already downloaded re-sends it from cache instead of downloading again
+
 ## Notes
 
 - Private bot: only user IDs listed in `ALLOWED_USER_IDS` get a response; everyone else is ignored (and logged).

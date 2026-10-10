@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
+    ForceReply,
     FSInputFile,
     InputMediaPhoto,
     LinkPreviewOptions,
@@ -89,10 +90,32 @@ def _format_entries(entries: list[Download], tz: ZoneInfo) -> str:
     return "\n".join(lines)
 
 
+PROMPTS = {
+    "note": ("What should the note say?", "Note for your latest download"),
+    "search": ("What do you want to search for?", "Text or #tag"),
+    "get": ("Which download id? (see /history)", "Id, e.g. 12"),
+    "delete": ("Which download id should I remove?", "Id, e.g. 12"),
+    "audio": ("Send the link to extract audio from.", "https://..."),
+}
+
+
 def create_router(settings: Settings) -> Router:
     router = Router(name="hoard")
     store = Store(settings.history_db)
     tz = ZoneInfo(settings.timezone)
+    # Tapping a command in Telegram's menu sends it with no text, so we ask for
+    # the missing part and use the user's next message as the argument.
+    pending: dict[int, str] = {}
+
+    async def ask(message: Message, action: str) -> None:
+        pending[message.from_user.id] = action
+        prompt, placeholder = PROMPTS[action]
+        await message.answer(
+            prompt,
+            reply_markup=ForceReply(
+                input_field_placeholder=placeholder, selective=True
+            ),
+        )
 
     @router.message.outer_middleware()
     async def allow_listed_only(handler, event: Message, data):
@@ -115,15 +138,13 @@ def create_router(settings: Settings) -> Router:
     async def help_cmd(message: Message) -> None:
         await message.answer(HELP_TEXT)
 
-    @router.message(Command("audio"))
-    async def audio_cmd(message: Message, command: CommandObject) -> None:
-        args = command.args or ""
+    async def run_audio(message: Message, args: str) -> None:
         urls = extract_urls(args)
         if not urls and message.reply_to_message:
             urls = extract_urls(message.reply_to_message.text or "")
 
         if not urls:
-            await message.answer("Usage: /audio <url>")
+            await message.answer("I need a link. Try /audio again with a URL.")
             return
 
         await _process_url(
@@ -137,32 +158,44 @@ def create_router(settings: Settings) -> Router:
             note=_note_from_text(args),
         )
 
+    @router.message(Command("audio"))
+    async def audio_cmd(message: Message, command: CommandObject) -> None:
+        pending.pop(message.from_user.id, None)
+        args = command.args or ""
+        if not extract_urls(args) and not (
+            message.reply_to_message
+            and extract_urls(message.reply_to_message.text or "")
+        ):
+            await ask(message, "audio")
+            return
+        await run_audio(message, args)
+
     @router.message(Command("history"))
     async def history_cmd(message: Message) -> None:
+        pending.pop(message.from_user.id, None)
         entries = store.history(message.from_user.id)
         if not entries:
             await message.answer("No downloads yet.")
             return
         await message.answer(_format_entries(entries, tz), link_preview_options=NO_PREVIEW)
 
-    @router.message(Command("search"))
-    async def search_cmd(message: Message, command: CommandObject) -> None:
-        query = (command.args or "").strip()
-        if not query:
-            await message.answer("Usage: /search <text or #tag>")
-            return
+    async def run_search(message: Message, query: str) -> None:
         entries = store.search(message.from_user.id, query)
         if not entries:
             await message.answer(f"Nothing found for: {query}")
             return
         await message.answer(_format_entries(entries, tz), link_preview_options=NO_PREVIEW)
 
-    @router.message(Command("note"))
-    async def note_cmd(message: Message, command: CommandObject) -> None:
-        text = (command.args or "").strip()
-        if not text:
-            await message.answer("Usage: /note <text> (applies to your latest download)")
+    @router.message(Command("search"))
+    async def search_cmd(message: Message, command: CommandObject) -> None:
+        pending.pop(message.from_user.id, None)
+        query = (command.args or "").strip()
+        if not query:
+            await ask(message, "search")
             return
+        await run_search(message, query)
+
+    async def run_note(message: Message, text: str) -> None:
         latest = store.latest(message.from_user.id)
         if latest is None:
             await message.answer("No downloads yet.")
@@ -170,11 +203,19 @@ def create_router(settings: Settings) -> Router:
         store.set_note(latest.id, message.from_user.id, text[:500])
         await message.answer(f"Note saved on #{latest.id}.")
 
-    @router.message(Command("get"))
-    async def get_cmd(message: Message, command: CommandObject) -> None:
-        arg = (command.args or "").strip().lstrip("#")
+    @router.message(Command("note"))
+    async def note_cmd(message: Message, command: CommandObject) -> None:
+        pending.pop(message.from_user.id, None)
+        text = (command.args or "").strip()
+        if not text:
+            await ask(message, "note")
+            return
+        await run_note(message, text)
+
+    async def run_get(message: Message, arg: str) -> None:
+        arg = arg.strip().lstrip("#")
         if not arg.isdigit():
-            await message.answer("Usage: /get <id> (ids are in /history)")
+            await message.answer("That isn't an id. Ids are listed in /history.")
             return
         entry = store.get(int(arg), message.from_user.id)
         if entry is None:
@@ -190,20 +231,50 @@ def create_router(settings: Settings) -> Router:
         sent = await _send_cached(message, entry)
         store.map_messages(message.chat.id, entry.id, sent)
 
-    @router.message(Command("delete"))
-    async def delete_cmd(message: Message, command: CommandObject) -> None:
-        arg = (command.args or "").strip().lstrip("#")
+    @router.message(Command("get"))
+    async def get_cmd(message: Message, command: CommandObject) -> None:
+        pending.pop(message.from_user.id, None)
+        arg = (command.args or "").strip()
+        if not arg:
+            await ask(message, "get")
+            return
+        await run_get(message, arg)
+
+    async def run_delete(message: Message, arg: str) -> None:
+        arg = arg.strip().lstrip("#")
         if not arg.isdigit():
-            await message.answer("Usage: /delete <id>")
+            await message.answer("That isn't an id. Ids are listed in /history.")
             return
         removed = store.delete(int(arg), message.from_user.id)
         await message.answer(
             f"Removed #{arg} from history." if removed else "No download with that id."
         )
 
+    @router.message(Command("delete"))
+    async def delete_cmd(message: Message, command: CommandObject) -> None:
+        pending.pop(message.from_user.id, None)
+        arg = (command.args or "").strip()
+        if not arg:
+            await ask(message, "delete")
+            return
+        await run_delete(message, arg)
+
     @router.message(F.text)
     async def handle_text(message: Message) -> None:
         text = message.text or ""
+
+        action = pending.pop(message.from_user.id, None)
+        if action is not None and (action == "audio" or not extract_urls(text)):
+            handlers = {
+                "note": run_note,
+                "search": run_search,
+                "get": run_get,
+                "delete": run_delete,
+                "audio": run_audio,
+            }
+            await handlers[action](message, text.strip())
+            return
+
         urls = extract_urls(text)
 
         if not urls:

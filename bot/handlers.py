@@ -70,6 +70,11 @@ def _note_from_text(text: str) -> str | None:
     return note[:500] or None
 
 
+def _label(download_id: int, title: str | None) -> str:
+    text = f"#{download_id} · {title or 'Downloaded media'}"
+    return text if len(text) <= 900 else text[:897] + "..."
+
+
 def _local(created_at: str, tz: ZoneInfo) -> str:
     """History times are stored in UTC; show them in the configured timezone."""
     utc = datetime.strptime(created_at, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
@@ -307,7 +312,7 @@ def create_router(settings: Settings) -> Router:
 
 async def _send_cached(message: Message, entry: Download) -> list[int]:
     """Re-send a past download using Telegram's stored file ids."""
-    caption = entry.title or "Downloaded media"
+    caption = _label(entry.id, entry.title)
     sent: list[Message] = []
     if entry.media_type == "audio":
         sent.append(await message.answer_audio(audio=entry.file_id, caption=caption))
@@ -320,7 +325,7 @@ async def _send_cached(message: Message, entry: Download) -> list[int]:
         if entry.audio_file_id:
             sent.append(
                 await message.answer_audio(
-                    audio=entry.audio_file_id, title=entry.title
+                    audio=entry.audio_file_id, title=_label(entry.id, entry.title)
                 )
             )
     return [m.message_id for m in sent]
@@ -382,64 +387,70 @@ async def _process_url(
         if display_title:
             result = replace(result, title=display_title)
 
-        await status.edit_text("Uploading...")
-        file = FSInputFile(result.path)
-
-        caption = result.title or "Downloaded media"
-        if len(caption) > 900:
-            caption = caption[:897] + "..."
-
-        sent_ids: list[int] = []
-        file_id: str | None = None
-        audio_file_id: str | None = None
-
-        if result.media_type == "images":
-            for i in range(0, len(result.images), 10):
-                group = [
-                    InputMediaPhoto(
-                        media=FSInputFile(img),
-                        caption=caption if i == 0 and n == 0 else None,
-                    )
-                    for n, img in enumerate(result.images[i : i + 10])
-                ]
-                sent_ids += [m.message_id for m in await message.answer_media_group(group)]
-            if result.audio_path is not None:
-                audio_msg = await message.answer_audio(
-                    audio=FSInputFile(result.audio_path), title=result.title
-                )
-                sent_ids.append(audio_msg.message_id)
-        elif audio_only or result.media_type == "audio":
-            sent = await message.answer_audio(audio=file, caption=caption)
-            sent_ids.append(sent.message_id)
-            file_id = sent.audio.file_id if sent.audio else None
-        else:
-            sent = await message.answer_video(
-                video=file,
-                caption=caption,
-                supports_streaming=True,
-            )
-            sent_ids.append(sent.message_id)
-            file_id = sent.video.file_id if sent.video else None
-            if result.audio_path is not None:
-                audio_msg = await message.answer_audio(
-                    audio=FSInputFile(result.audio_path),
-                    title=result.title,
-                )
-                sent_ids.append(audio_msg.message_id)
-                audio_file_id = audio_msg.audio.file_id if audio_msg.audio else None
-
         size_bytes = sum(p.stat().st_size for p in (result.images or (result.path,)))
-        download_id = None
+        download_id = store.reserve(
+            user_id=user_id,
+            url=url,
+            mode=mode,
+            title=result.title,
+            site=_site(url),
+            media_type=result.media_type,
+            size_bytes=size_bytes,
+            has_audio=result.audio_path is not None,
+        )
+
         try:
-            download_id = store.add(
-                user_id=user_id,
-                url=url,
-                mode=mode,
-                title=result.title,
-                site=_site(url),
-                media_type=result.media_type,
-                size_bytes=size_bytes,
-                has_audio=result.audio_path is not None,
+            await status.edit_text("Uploading...")
+            file = FSInputFile(result.path)
+            caption = _label(download_id, result.title)
+
+            sent_ids: list[int] = []
+            file_id: str | None = None
+            audio_file_id: str | None = None
+
+            if result.media_type == "images":
+                for i in range(0, len(result.images), 10):
+                    group = [
+                        InputMediaPhoto(
+                            media=FSInputFile(img),
+                            caption=caption if i == 0 and n == 0 else None,
+                        )
+                        for n, img in enumerate(result.images[i : i + 10])
+                    ]
+                    sent_ids += [
+                        m.message_id for m in await message.answer_media_group(group)
+                    ]
+                if result.audio_path is not None:
+                    audio_msg = await message.answer_audio(
+                        audio=FSInputFile(result.audio_path), title=caption
+                    )
+                    sent_ids.append(audio_msg.message_id)
+            elif audio_only or result.media_type == "audio":
+                sent = await message.answer_audio(audio=file, caption=caption)
+                sent_ids.append(sent.message_id)
+                file_id = sent.audio.file_id if sent.audio else None
+            else:
+                sent = await message.answer_video(
+                    video=file,
+                    caption=caption,
+                    supports_streaming=True,
+                )
+                sent_ids.append(sent.message_id)
+                file_id = sent.video.file_id if sent.video else None
+                if result.audio_path is not None:
+                    audio_msg = await message.answer_audio(
+                        audio=FSInputFile(result.audio_path),
+                        title=caption,
+                    )
+                    sent_ids.append(audio_msg.message_id)
+                    audio_file_id = audio_msg.audio.file_id if audio_msg.audio else None
+        except BaseException:
+            store.delete(download_id, user_id)
+            raise
+
+        try:
+            store.finalize(
+                download_id,
                 file_id=file_id,
                 audio_file_id=audio_file_id,
                 chat_id=message.chat.id,

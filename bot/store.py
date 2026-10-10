@@ -78,7 +78,7 @@ class Store:
         db.execute("PRAGMA foreign_keys = ON")
         return db
 
-    def add(
+    def reserve(
         self,
         *,
         user_id: int,
@@ -89,29 +89,39 @@ class Store:
         media_type: str,
         size_bytes: int,
         has_audio: bool,
-        file_id: str | None,
-        audio_file_id: str | None,
-        chat_id: int,
-        message_ids: list[int],
     ) -> int:
+        """Create the row before sending so the id can be shown on the media."""
         created = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
         with closing(self._connect()) as db, db:
             cursor = db.execute(
                 "INSERT INTO downloads (user_id, url, mode, title, site, media_type,"
-                " size_bytes, has_audio, file_id, audio_file_id, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " size_bytes, has_audio, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     user_id, url, mode, title, site, media_type, size_bytes,
-                    int(has_audio), file_id, audio_file_id, created,
+                    int(has_audio), created,
                 ),
             )
-            download_id = cursor.lastrowid
+        return cursor.lastrowid
+
+    def finalize(
+        self,
+        download_id: int,
+        *,
+        file_id: str | None,
+        audio_file_id: str | None,
+        chat_id: int,
+        message_ids: list[int],
+    ) -> None:
+        with closing(self._connect()) as db, db:
+            db.execute(
+                "UPDATE downloads SET file_id = ?, audio_file_id = ? WHERE id = ?",
+                (file_id, audio_file_id, download_id),
+            )
             db.executemany(
                 "INSERT OR REPLACE INTO messages (chat_id, message_id, download_id)"
                 " VALUES (?, ?, ?)",
                 [(chat_id, mid, download_id) for mid in message_ids],
             )
-        return download_id
 
     def map_messages(self, chat_id: int, download_id: int, message_ids: list[int]) -> None:
         with closing(self._connect()) as db, db:

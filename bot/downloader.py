@@ -115,6 +115,9 @@ def _build_options(
         options.update(
             {
                 "format": "bv*+ba/b",
+                # Prefer the best format that already fits Telegram, so most
+                # downloads skip the re-encode entirely.
+                "format_sort": ["size:44M"],
                 "merge_output_format": "mp4",
             }
         )
@@ -162,6 +165,14 @@ def _probe_duration(path: Path) -> float | None:
         return None
 
 
+def _target_height(video_kbps: float) -> int:
+    """Lower resolutions look better than starved high ones at small bitrates."""
+    for min_kbps, height in ((2500, 1080), (1200, 720), (600, 480), (300, 360)):
+        if video_kbps >= min_kbps:
+            return height
+    return 240
+
+
 def _shrink_to_fit(path: Path, *, audio: bool) -> Path:
     """Re-encode media that is over Telegram's upload limit so it fits."""
     if path.stat().st_size <= TELEGRAM_UPLOAD_LIMIT:
@@ -173,31 +184,40 @@ def _shrink_to_fit(path: Path, *, audio: bool) -> Path:
 
     total_kbps = SHRINK_TARGET * 8 / duration / 1000
     out = path.with_name(path.stem + "-small" + (".mp3" if audio else ".mp4"))
+    passlog = path.with_name(path.stem + "-pass")
 
-    for factor in (0.92, 0.75):
+    for factor in (0.95, 0.85):
         budget = total_kbps * factor
         if audio:
             if budget < 32:
                 break
-            args = ["-vn", "-c:a", "libmp3lame", "-b:a", f"{int(min(budget, 192))}k"]
+            passes = [["-vn", "-c:a", "libmp3lame", "-b:a", f"{int(min(budget, 192))}k", str(out)]]
         else:
             video_kbps = budget - AUDIO_BITRATE_KBPS
             if video_kbps < 150:
                 break
-            args = [
+            video_args = [
+                "-vf", f"scale=-2:min(ih\\,{_target_height(video_kbps)})",
                 "-c:v", "libx264", "-preset", "veryfast",
                 "-b:v", f"{int(video_kbps)}k",
                 "-maxrate", f"{int(video_kbps * 1.4)}k",
                 "-bufsize", f"{int(video_kbps * 2)}k",
-                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                "-c:a", "aac", "-b:a", f"{AUDIO_BITRATE_KBPS}k",
+                "-pix_fmt", "yuv420p", "-passlogfile", str(passlog),
+            ]
+            passes = [
+                [*video_args, "-pass", "1", "-an", "-f", "null", os.devnull],
+                [
+                    *video_args, "-pass", "2", "-movflags", "+faststart",
+                    "-c:a", "aac", "-b:a", f"{AUDIO_BITRATE_KBPS}k", str(out),
+                ],
             ]
         try:
-            subprocess.run(
-                ["ffmpeg", "-y", "-loglevel", "error", "-i", str(path), *args, str(out)],
-                check=True,
-                timeout=900,
-            )
+            for args in passes:
+                subprocess.run(
+                    ["ffmpeg", "-y", "-loglevel", "error", "-i", str(path), *args],
+                    check=True,
+                    timeout=900,
+                )
         except (subprocess.SubprocessError, OSError):
             out.unlink(missing_ok=True)
             raise DownloadError(
